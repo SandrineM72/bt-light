@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1a1726">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<title>bt-light</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --nuit: #1a1726;
+    --ardoise: #2b2641;
+    --lin: #f2eef8;
+    --brume: #9d96b3;
+    --lampe: rgb(255, 48, 48);
+    --eclat: 1;
+  }
+  * { box-sizing: border-box; margin: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: "Bricolage Grotesque", system-ui, sans-serif;
+    background: var(--nuit);
+    color: var(--lin);
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+    padding: calc(env(safe-area-inset-top) + 1.25rem) 1.5rem calc(env(safe-area-inset-bottom) + 1.5rem);
+    max-width: 30rem;
+    margin: 0 auto;
+    -webkit-tap-highlight-color: transparent;
+  }
+  body::before {
+    content: "";
+    position: fixed; inset: 0; z-index: -1;
+    background: radial-gradient(circle at 50% 35%, var(--lampe) 0, transparent 65%);
+    opacity: calc(var(--eclat) * 0.35);
+    transition: opacity .3s;
+  }
+  body.eteinte::before { opacity: 0; }
+
+  header { display: flex; justify-content: space-between; align-items: baseline; }
+  h1 { font-size: 1.75rem; font-weight: 700; letter-spacing: -0.02em; }
+  #statut { font-size: .9rem; color: var(--brume); }
+  #statut.ok { color: var(--lin); }
+
+  #ampoule {
+    align-self: center;
+    width: min(62vw, 15rem); aspect-ratio: 1;
+    border-radius: 50%; border: 0; cursor: pointer;
+    background: var(--lampe);
+    box-shadow: 0 0 calc(var(--eclat) * 5rem) calc(var(--eclat) * 1.5rem) var(--lampe);
+    color: var(--nuit); font: inherit; font-size: 1rem; font-weight: 700;
+    transition: background .2s, box-shadow .3s, transform .15s;
+  }
+  #ampoule:active { transform: scale(.96); }
+  .eteinte #ampoule { background: var(--ardoise); box-shadow: none; color: var(--brume); }
+
+  .reglage { display: grid; gap: .5rem; }
+  .reglage label { display: flex; justify-content: space-between; font-size: 1rem; }
+  .reglage output { color: var(--brume); }
+  input[type=range] {
+    -webkit-appearance: none; appearance: none;
+    width: 100%; height: 2.75rem; border-radius: 1.4rem; background: var(--ardoise);
+  }
+  #teinte { background: linear-gradient(90deg, red, yellow, lime, cyan, blue, magenta, red); }
+  #intensite { background: linear-gradient(90deg, #000, var(--lampe)); }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 2.75rem; height: 2.75rem; border-radius: 50%;
+    background: var(--lin); border: 4px solid var(--nuit);
+  }
+  input[type=range]:focus-visible { outline: 3px solid var(--lin); outline-offset: 3px; }
+
+  #connexion {
+    margin-top: auto; padding: 1rem; border-radius: 1rem; border: 2px solid var(--lin);
+    background: transparent; color: var(--lin); font: inherit; font-size: 1.1rem; font-weight: 700;
+  }
+  #connexion.connectee { border-color: var(--ardoise); color: var(--brume); font-weight: 400; font-size: 1rem; }
+  #aide { font-size: .9rem; color: var(--brume); line-height: 1.5; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+  <header>
+    <h1>bt-light</h1>
+    <span id="statut">Pas connectée</span>
+  </header>
+
+  <button id="ampoule" aria-label="Allumer ou éteindre">Éteindre</button>
+
+  <div class="reglage">
+    <label for="teinte">Teinte</label>
+    <input id="teinte" type="range" min="0" max="359" value="0">
+  </div>
+
+  <div class="reglage">
+    <label for="intensite">Intensité <output id="valeur">100 %</output></label>
+    <input id="intensite" type="range" min="5" max="100" value="100">
+  </div>
+
+  <p id="aide" hidden></p>
+  <button id="connexion">Connecter l'ampoule</button>
+
+<script>
+  // --- Protocole Sengled Solo Color Plus (service 0xCC04, écriture sur 0xEE03) ---
+  const SERVICE = 0xcc04;
+  const ECRITURE = 0xee03;
+  const hex = s => new Uint8Array(s.match(/../g).map(b => parseInt(b, 16)));
+  const ALLUMER  = hex('7EFEFFFFFF000000000100000000000000FC007E');
+  const ETEINDRE = hex('7EFEFFFFFF000000000100000000000100FD007E');
+  const ENTETE = [0x7E, 0xFE, 0xFF, 0xFF, 0xFF, 0, 0, 0, 0, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00];
+  // 0x7D et 0x7E sont des octets réservés : on les évite (différence invisible à l'œil)
+  const sur = v => (v === 0x7D || v === 0x7E) ? 0x7C : v;
+  const trameCouleur = (r, g, b) => new Uint8Array([...ENTETE, sur(r), sur(g), sur(b), 0xFF]);
+
+  // --- État ---
+  const $ = id => document.getElementById(id);
+  const teinte = $('teinte'), intensite = $('intensite');
+  let appareil = null, caract = null, allumee = true, volontaire = false;
+
+  try {
+    const memo = JSON.parse(localStorage.getItem('bt-light') || '{}');
+    if (memo.teinte != null) teinte.value = memo.teinte;
+    if (memo.intensite != null) intensite.value = memo.intensite;
+  } catch (e) {}
+
+  function rgb() {
+    const h = +teinte.value, k = n => (n + h / 60) % 6;
+    const f = n => 1 - Math.max(0, Math.min(k(n), 4 - k(n), 1));
+    const e = +intensite.value / 100;
+    return [f(5), f(3), f(1)].map(c => Math.round(c * 255 * e));
+  }
+
+  function afficher() {
+    const h = +teinte.value, e = +intensite.value;
+    document.documentElement.style.setProperty('--lampe', `hsl(${h} 100% 50%)`);
+    document.documentElement.style.setProperty('--eclat', e / 100);
+    $('valeur').textContent = `${e} %`;
+    document.body.classList.toggle('eteinte', !allumee);
+    $('ampoule').textContent = allumee ? 'Éteindre' : 'Allumer';
+  }
+
+  // --- File d'envoi : une écriture à la fois, les couleurs intermédiaires sont écrasées ---
+  const file = [];
+  let enCours = false;
+  function envoyer(trame, estCouleur = false) {
+    const dernier = file[file.length - 1];
+    if (estCouleur && dernier && dernier.estCouleur) dernier.trame = trame;
+    else file.push({ trame, estCouleur });
+    vider();
+  }
+  async function vider() {
+    if (enCours || !caract) return;
+    enCours = true;
+    while (file.length) {
+      const { trame } = file.shift();
+      try { await caract.writeValueWithResponse(trame); } catch (e) { console.warn(e); }
+    }
+    enCours = false;
+  }
+
+  function envoyerCouleur() {
+    try { localStorage.setItem('bt-light', JSON.stringify({ teinte: teinte.value, intensite: intensite.value })); } catch (e) {}
+    afficher();
+    if (allumee) envoyer(trameCouleur(...rgb()), true);
+  }
+
+  teinte.addEventListener('input', envoyerCouleur);
+  intensite.addEventListener('input', envoyerCouleur);
+
+  $('ampoule').addEventListener('click', () => {
+    allumee = !allumee;
+    afficher();
+    envoyer(allumee ? ALLUMER : ETEINDRE);
+    if (allumee) envoyer(trameCouleur(...rgb()), true);
+  });
+
+  // --- Connexion Bluetooth ---
+  function statut(texte, ok = false, aide = '') {
+    $('statut').textContent = texte;
+    $('statut').classList.toggle('ok', ok);
+    $('aide').hidden = !aide;
+    $('aide').textContent = aide;
+    $('connexion').textContent = ok ? 'Se déconnecter' : "Connecter l'ampoule";
+    $('connexion').classList.toggle('connectee', ok);
+  }
+
+  async function connecter() {
+    try {
+      if (!appareil) {
+        appareil = await navigator.bluetooth.requestDevice({
+          filters: [{ namePrefix: 'S21' }],
+          optionalServices: [SERVICE]
+        });
+        appareil.addEventListener('gattserverdisconnected', () => {
+          caract = null;
+          if (volontaire) { volontaire = false; statut('Pas connectée'); return; }
+          statut('Déconnectée', false, "L'ampoule s'est déconnectée. Appuie sur « Connecter l'ampoule » pour reprendre.");
+        });
+      }
+      statut('Connexion…');
+      const serveur = await appareil.gatt.connect();
+      const service = await serveur.getPrimaryService(SERVICE);
+      caract = await service.getCharacteristic(ECRITURE);
+      statut('Connectée', true);
+      allumee = true;
+      afficher();
+      envoyer(ALLUMER);
+      envoyer(trameCouleur(...rgb()), true);
+    } catch (e) {
+      if (e.name === 'NotFoundError') { statut('Pas connectée'); return; }
+      statut('Échec', false, "Connexion impossible. Vérifie que l'ampoule est allumée à l'interrupteur, que l'appli Pulse est fermée et que nRF Connect est déconnecté.");
+      console.warn(e);
+    }
+  }
+
+  $('connexion').addEventListener('click', () => {
+    if (caract && appareil) { volontaire = true; appareil.gatt.disconnect(); }
+    else connecter();
+  });
+
+  if (!navigator.bluetooth) {
+    statut('Non compatible', false, 'Ouvre cette page dans Chrome sur Android pour piloter l’ampoule.');
+    $('connexion').disabled = true;
+  }
+  afficher();
+</script>
+</body>
+</html>
